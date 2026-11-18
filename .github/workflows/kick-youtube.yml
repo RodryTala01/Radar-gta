@@ -1,5 +1,7 @@
 name: Kick a YouTube privado
 on:
+  schedule:
+    - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
       playlist:
@@ -10,22 +12,78 @@ on:
         description: Título del Short
         required: true
         type: string
-      description:
-        description: Crédito y enlace original
-        type: string
       upload:
         description: Subir a YouTube como privado
         type: boolean
         default: false
+concurrency:
+  group: radar-gta-youtube
+  cancel-in-progress: false
 permissions: {}
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
+      - name: Recuperar historial de clips
+        if: github.event_name == 'schedule'
+        uses: actions/cache/restore@v4
+        with:
+          path: radar-seen.txt
+          key: radar-kick-history-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: radar-kick-history-
+      - name: Buscar un clip de Kick
+        if: github.event_name == 'schedule'
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures
+          import os
+          import re
+          from pathlib import Path
+          from urllib.request import urlopen
+
+          history = Path("radar-seen.txt")
+          seen = set(history.read_text().splitlines()) if history.exists() else set()
+          seen.update(("clip_01M7QDZ8PVTH7C02R3707BNP9A", "clip_01M7QBZWX82JKAQ03GCSG5QSG1"))
+
+          def read(url):
+              with urlopen(url, timeout=12) as response:
+                  return response.read(12_000_000).decode("utf-8", errors="replace")
+
+          page = read("https://kick.com/category/grand-theft-auto-vi/clips")
+          candidates = list(dict.fromkeys(re.findall(r"/([a-zA-Z0-9_-]+)/clips/(clip_[A-Z0-9]+)", page)))
+          if not candidates:
+              raise SystemExit("Kick no devolvió enlaces de clips en su categoría pública.")
+
+          def resolve(candidate):
+              author, clip_id = candidate
+              try:
+                  html = read(f"https://kick.com/{author}/clips/{clip_id}")
+                  match = re.search(
+                      r"https://clips\.kick\.com/clips/[a-zA-Z0-9/_-]+\.m3u8",
+                      html,
+                  )
+                  if match and f"/{clip_id}/" in match[0]:
+                      return author, clip_id, match[0]
+              except OSError:
+                  return None
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results = list(pool.map(resolve, [item for item in candidates if item[1] not in seen][:12]))
+          selected = next((result for result in results if result), None)
+          if not selected:
+              print("No hay clips nuevos con una lista HLS accesible.")
+              raise SystemExit(0)
+          author, clip_id, playlist = selected
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              print(f"RADAR_PLAYLIST={playlist}", file=env)
+              print(f"RADAR_CLIP_ID={clip_id}", file=env)
+              print(f"RADAR_TITLE=GTA VI | Clip de {author}"[:100], file=env)
+          PY
       - name: Preparar MP4 vertical
+        if: github.event_name == 'workflow_dispatch' || env.RADAR_PLAYLIST != ''
         env:
-          PLAYLIST: ${{ inputs.playlist }}
+          PLAYLIST: ${{ inputs.playlist || env.RADAR_PLAYLIST }}
         run: |
           set -euo pipefail
           [[ "$PLAYLIST" =~ ^https://clips\.kick\.com/clips/[a-zA-Z0-9/_-]+\.m3u8$ ]]
@@ -38,14 +96,22 @@ jobs:
             -vf "scale=720:1280:force_original_aspect_ratio=increase:force_divisible_by=2,crop=720:1280,setsar=1" \
             -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -movflags +faststart clip.mp4
           ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact clip.mp4
+      - name: Reservar clip para evitar subidas duplicadas
+        if: github.event_name == 'schedule' && env.RADAR_CLIP_ID != ''
+        run: printf '%s\n' "$RADAR_CLIP_ID" >> radar-seen.txt
+      - name: Guardar historial antes de subir
+        if: github.event_name == 'schedule' && env.RADAR_CLIP_ID != ''
+        uses: actions/cache/save@v4
+        with:
+          path: radar-seen.txt
+          key: radar-kick-history-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Subir MP4 a YouTube
-        if: ${{ inputs.upload }}
+        if: inputs.upload || (github.event_name == 'schedule' && env.RADAR_PLAYLIST != '')
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          VIDEO_TITLE: ${{ inputs.title }}
-          VIDEO_DESCRIPTION: ${{ inputs.description }}
+          VIDEO_TITLE: ${{ inputs.title || env.RADAR_TITLE }}
         run: |
           python3 - <<'PY'
           import json
@@ -81,7 +147,7 @@ jobs:
           authorization = {"Authorization": "Bearer " + token}
           media = Path("clip.mp4")
           metadata = {
-              "snippet": {"title": title, "description": os.environ["VIDEO_DESCRIPTION"], "categoryId": "20"},
+              "snippet": {"title": title, "description": "Fuente: Kick", "categoryId": "20"},
               "status": {"privacyStatus": "private"},
           }
           endpoint = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=false"
