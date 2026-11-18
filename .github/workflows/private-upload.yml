@@ -1,0 +1,68 @@
+name: Probar subida privada
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: URL HTTPS directa del MP4
+        required: true
+        type: string
+      title:
+        description: Título del Short
+        required: true
+        type: string
+permissions: {}
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enviar Short privado a Buffer
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: ${{ vars.BUFFER_CHANNEL_ID }}
+          VIDEO_URL: ${{ inputs.video_url }}
+          VIDEO_TITLE: ${{ inputs.title }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from urllib.parse import urlsplit
+
+          key = os.environ["BUFFER_API_KEY"]
+          channel = os.environ["BUFFER_CHANNEL_ID"]
+          url = os.environ["VIDEO_URL"]
+          title = os.environ["VIDEO_TITLE"].strip()
+          if not key or not channel:
+              raise SystemExit("Configurá BUFFER_API_KEY y BUFFER_CHANNEL_ID.")
+          if urlsplit(url).scheme != "https" or not title or len(title) > 100:
+              raise SystemExit("Usá una URL HTTPS y un título de 1 a 100 caracteres.")
+
+          query = """mutation Upload($input: CreatePostInput!) {
+              createPost(input: $input) {
+                  ... on PostActionSuccess { post { id } }
+                  ... on MutationError { message }
+              }
+          }"""
+          payload = {"query": query, "variables": {"input": {
+              "channelId": channel,
+              "text": "",
+              "schedulingType": "automatic",
+              "mode": "shareNow",
+              "assets": [{"video": {"url": url}}],
+              "metadata": {"youtube": {
+                  "title": title, "categoryId": "20",
+                  "privacy": "private", "notifySubscribers": False
+              }}
+          }}}
+          request = urllib.request.Request(
+              "https://api.buffer.com", data=json.dumps(payload).encode(),
+              headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              result = json.load(response)
+          post = ((result.get("data") or {}).get("createPost") or {}).get("post")
+          if not post or not post.get("id"):
+              raise SystemExit("Buffer no confirmó la solicitud. Revisá el canal, la clave y el MP4.")
+          print("Solicitud aceptada por Buffer. Verificá el resultado en YouTube Studio.")
+          PY
