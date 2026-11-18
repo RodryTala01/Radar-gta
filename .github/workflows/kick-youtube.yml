@@ -4,11 +4,7 @@ on:
     branches: [main]
     paths: [.github/workflows/kick-youtube.yml]
   schedule:
-    - cron: '17 */2 * * *'
-    # Refuerzo temporal de lanzamiento. El control de fecha evita repetirlo cada año.
-    - cron: '17 1-23/2 18-22 11 *'
-    - cron: '47 * 18-22 11 *'
-    - cron: '7,17,27,37,47,57 * 18-19 11 *'
+    - cron: '7-57/10 * * * *'
   workflow_dispatch:
     inputs:
       playlist:
@@ -36,20 +32,22 @@ jobs:
       - name: Comprobar vigencia del horario de lanzamiento
         id: launch_window
         env:
-          TRIGGER_CRON: ${{ github.event.schedule }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           now=$(date -u +%s)
-          start=$(date -u -d '2026-11-18 03:00:00 UTC' +%s)
-          end=$(date -u -d '2026-11-22 03:00:00 UTC' +%s)
-          launch_day_end=$(date -u -d '2026-11-19 03:00:00 UTC' +%s)
-          burst_cron='7,17,27,37,47,57 * 18-19 11 *'
-          if [[ -z "$TRIGGER_CRON" ]]; then
+          burst_end=$(date -u -d '2026-11-19 03:00:00 UTC' +%s)
+          launch_end=$(date -u -d '2026-11-22 03:00:00 UTC' +%s)
+          # Snap the current time back to the most recent :07/:17/... tick.
+          tick=$(( (now - 420) / 600 * 600 + 420 ))
+          minute=$(date -u -d "@$tick" +%-M)
+          hour=$(date -u -d "@$tick" +%-H)
+          if [[ "$EVENT_NAME" != schedule ]] || (( now < burst_end )); then
             echo 'active=true' >> "$GITHUB_OUTPUT"
-          elif (( now >= start && now < launch_day_end )); then
-            if [[ "$TRIGGER_CRON" == "$burst_cron" ]]; then
+          elif (( now < launch_end )); then
+            if (( minute == 17 || minute == 47 )); then
               echo 'active=true' >> "$GITHUB_OUTPUT"
             fi
-          elif [[ "$TRIGGER_CRON" != "$burst_cron" ]] && { [[ "$TRIGGER_CRON" == '17 */2 * * *' ]] || (( now >= start && now < end )); }; then
+          elif (( minute == 17 && hour % 2 == 0 )); then
             echo 'active=true' >> "$GITHUB_OUTPUT"
           fi
       - name: Recuperar historial de clips
