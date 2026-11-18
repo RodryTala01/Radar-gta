@@ -77,10 +77,15 @@ jobs:
                       print("RADAR_TITLE=GTA VI | Clip de NEEXcsgo", file=env)
               raise SystemExit(0)
 
+          # Idioma habitual del canal. El audio de cada clip puede variar.
+          spanish = {"rdjavi", "riversgg", "gaviria777", "eldrizx", "ibai", "auronplay", "juansguarnizo", "illojuan"}
+          english = {"darkviperau", "typicalgamer", "xqc", "popenzl", "tgg", "joshimuz", "theburntpeanut", "jasontheween", "jelly", "caylus"}
           page = read("https://kick.com/category/grand-theft-auto-vi/clips")
           candidates = list(dict.fromkeys(re.findall(r"/([a-zA-Z0-9_-]+)/clips/(clip_[A-Z0-9]+)", page)))
           if not candidates:
               raise SystemExit("Kick no devolvió enlaces de clips en su categoría pública.")
+          candidates = [item for item in candidates if item[0].lower() in spanish | english]
+          candidates.sort(key=lambda item: item[0].lower() not in spanish)
 
           def resolve(candidate):
               author, clip_id = candidate
