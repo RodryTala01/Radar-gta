@@ -8,6 +8,7 @@ on:
     # Refuerzo temporal de lanzamiento. El control de fecha evita repetirlo cada año.
     - cron: '17 1-23/2 18-22 11 *'
     - cron: '47 * 18-22 11 *'
+    - cron: '7,17,27,37,47,57 * 18-19 11 *'
   workflow_dispatch:
     inputs:
       playlist:
@@ -40,7 +41,15 @@ jobs:
           now=$(date -u +%s)
           start=$(date -u -d '2026-11-18 03:00:00 UTC' +%s)
           end=$(date -u -d '2026-11-22 03:00:00 UTC' +%s)
-          if [[ -z "$TRIGGER_CRON" || "$TRIGGER_CRON" == '17 */2 * * *' ]] || (( now >= start && now < end )); then
+          launch_day_end=$(date -u -d '2026-11-19 03:00:00 UTC' +%s)
+          burst_cron='7,17,27,37,47,57 * 18-19 11 *'
+          if [[ -z "$TRIGGER_CRON" ]]; then
+            echo 'active=true' >> "$GITHUB_OUTPUT"
+          elif (( now >= start && now < launch_day_end )); then
+            if [[ "$TRIGGER_CRON" == "$burst_cron" ]]; then
+              echo 'active=true' >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "$TRIGGER_CRON" != "$burst_cron" ]] && { [[ "$TRIGGER_CRON" == '17 */2 * * *' ]] || (( now >= start && now < end )); }; then
             echo 'active=true' >> "$GITHUB_OUTPUT"
           fi
       - name: Recuperar historial de clips
