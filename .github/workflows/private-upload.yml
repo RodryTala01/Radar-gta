@@ -19,7 +19,7 @@ jobs:
       - name: Enviar Short privado a Buffer
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
-          BUFFER_CHANNEL_ID: ${{ vars.BUFFER_CHANNEL_ID }}
+          BUFFER_CHANNEL_ID: ${{ vars.BUFFER_CHANNEL_ID || secrets.BUFFER_CHANNEL_ID }}
           VIDEO_URL: ${{ inputs.video_url }}
           VIDEO_TITLE: ${{ inputs.title }}
         run: |
@@ -33,8 +33,10 @@ jobs:
           channel = os.environ["BUFFER_CHANNEL_ID"]
           url = os.environ["VIDEO_URL"]
           title = os.environ["VIDEO_TITLE"].strip()
-          if not key or not channel:
-              raise SystemExit("Configurá BUFFER_API_KEY y BUFFER_CHANNEL_ID.")
+          missing = [name for name, value in (("BUFFER_API_KEY", key),
+                     ("BUFFER_CHANNEL_ID", channel)) if not value.strip()]
+          if missing:
+              raise SystemExit("GitHub Actions no recibió: " + ", ".join(missing))
           if urlsplit(url).scheme != "https" or not title or len(title) > 100:
               raise SystemExit("Usá una URL HTTPS y un título de 1 a 100 caracteres.")
 
