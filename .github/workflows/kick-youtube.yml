@@ -25,7 +25,7 @@ concurrency:
 permissions: {}
 jobs:
   prepare:
-    if: github.event_name != 'push' || github.event.head_commit.message == 'Test Radar GTA backup queue with one public Short'
+    if: github.event_name != 'push' || github.event.head_commit.message == 'Publish remaining Radar GTA backup clip now'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
