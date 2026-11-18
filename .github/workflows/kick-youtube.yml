@@ -28,7 +28,7 @@ concurrency:
 permissions: {}
 jobs:
   prepare:
-    if: github.event_name != 'push' || github.event.head_commit.message == 'Publish one Radar GTA Short now on request'
+    if: github.event_name != 'push' || github.event.head_commit.message == 'Publish selected NEEXcsgo Short on request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -67,6 +67,15 @@ jobs:
           def read(url):
               with urlopen(url, timeout=12) as response:
                   return response.read(12_000_000).decode("utf-8", errors="replace")
+
+          if os.environ["GITHUB_EVENT_NAME"] == "push":
+              clip_id = "clip_01M7QGRKDMMZDP1B12J4CWPJA0"
+              if clip_id not in seen:
+                  with open(os.environ["GITHUB_ENV"], "a") as env:
+                      print("RADAR_PLAYLIST=https://clips.kick.com/clips/ad/" + clip_id + "/playlist.m3u8", file=env)
+                      print("RADAR_CLIP_ID=" + clip_id, file=env)
+                      print("RADAR_TITLE=GTA VI | Clip de NEEXcsgo", file=env)
+              raise SystemExit(0)
 
           page = read("https://kick.com/category/grand-theft-auto-vi/clips")
           candidates = list(dict.fromkeys(re.findall(r"/([a-zA-Z0-9_-]+)/clips/(clip_[A-Z0-9]+)", page)))
