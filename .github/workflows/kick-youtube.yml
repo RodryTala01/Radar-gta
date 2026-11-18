@@ -1,4 +1,4 @@
-name: Kick a YouTube privado
+name: Kick a YouTube
 on:
   schedule:
     - cron: '17 */2 * * *'
@@ -143,6 +143,7 @@ jobs:
           missing = [name for name in fields.values() if not os.environ[name]]
           if missing:
               raise SystemExit("Faltan secretos: " + ", ".join(missing))
+          visibility = "public" if os.environ["GITHUB_EVENT_NAME"] == "schedule" else "private"
           title = os.environ["VIDEO_TITLE"].strip()
           if not 1 <= len(title) <= 100:
               raise SystemExit("El título debe tener entre 1 y 100 caracteres.")
@@ -162,7 +163,7 @@ jobs:
           media = Path("clip.mp4")
           metadata = {
               "snippet": {"title": title, "description": "Fuente: Kick", "categoryId": "20"},
-              "status": {"privacyStatus": "private"},
+              "status": {"privacyStatus": visibility},
           }
           endpoint = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=false"
           headers = authorization | {
@@ -178,7 +179,12 @@ jobs:
           with send(session, media.read_bytes(), authorization | {"Content-Type": "video/mp4"},
                     "Transferencia del MP4", "PUT") as response:
               video = json.load(response)
-          if video.get("status", {}).get("privacyStatus") != "private" or not video.get("id"):
-              raise SystemExit("No se pudo verificar la visibilidad privada.")
-          print("Video privado confirmado: https://www.youtube.com/watch?v=" + video["id"])
+          actual = video.get("status", {}).get("privacyStatus")
+          video_id = video.get("id")
+          if not video_id:
+              raise SystemExit("YouTube no devolvió el ID del video.")
+          print("Video: https://www.youtube.com/watch?v=" + video_id)
+          if actual != visibility:
+              raise SystemExit(f"YouTube devolvió visibilidad {actual!r}; se solicitó {visibility!r}.")
+          print(f"Visibilidad confirmada: {actual}")
           PY
