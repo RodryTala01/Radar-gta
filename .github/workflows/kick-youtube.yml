@@ -1,19 +1,20 @@
 name: Kick a YouTube
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/kick-youtube.yml]
   schedule:
     - cron: '7-57/10 * * * *'
   workflow_dispatch:
     inputs:
+      automatic:
+        description: Buscar y publicar un clip público ahora
+        type: boolean
+        default: false
       playlist:
         description: URL HLS pública del clip en clips.kick.com
-        required: true
+        required: false
         type: string
       title:
         description: Título del Short
-        required: true
+        required: false
         type: string
       upload:
         description: Subir a YouTube como privado
@@ -25,7 +26,6 @@ concurrency:
 permissions: {}
 jobs:
   prepare:
-    if: github.event_name != 'push' || github.event.head_commit.message == 'Publish remaining Radar GTA backup clip now'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -51,14 +51,14 @@ jobs:
             echo 'active=true' >> "$GITHUB_OUTPUT"
           fi
       - name: Recuperar historial de clips
-        if: steps.launch_window.outputs.active == 'true' && (github.event_name != 'workflow_dispatch')
+        if: steps.launch_window.outputs.active == 'true' && ((github.event_name == 'schedule' || inputs.automatic))
         uses: actions/cache/restore@v4
         with:
           path: radar-seen.txt
           key: radar-kick-history-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: radar-kick-history-
       - name: Buscar un clip de Kick
-        if: steps.launch_window.outputs.active == 'true' && (github.event_name != 'workflow_dispatch')
+        if: steps.launch_window.outputs.active == 'true' && ((github.event_name == 'schedule' || inputs.automatic))
         run: |
           python3 - <<'PY'
           import concurrent.futures
@@ -75,7 +75,10 @@ jobs:
               with urlopen(url, timeout=12) as response:
                   return response.read(12_000_000).decode("utf-8", errors="replace")
 
-          fallback = [["eldrizx","clip_01M7Q574VGFZ58N6EQPPBB3JNG","https://clips.kick.com/clips/9b/clip_01M7Q574VGFZ58N6EQPPBB3JNG/playlist.m3u8"],["eldrizx","clip_01M7Q5SB30W1XGAHG7SC85QDFQ","https://clips.kick.com/clips/1f/clip_01M7Q5SB30W1XGAHG7SC85QDFQ/playlist.m3u8"]]
+          published_backups = [["eldrizx","clip_01M7Q574VGFZ58N6EQPPBB3JNG","https://clips.kick.com/clips/9b/clip_01M7Q574VGFZ58N6EQPPBB3JNG/playlist.m3u8"],["eldrizx","clip_01M7Q5SB30W1XGAHG7SC85QDFQ","https://clips.kick.com/clips/1f/clip_01M7Q5SB30W1XGAHG7SC85QDFQ/playlist.m3u8"]]
+          fallback = []
+          # Clips ya publicados, incluso si GitHub borra el historial de caché.
+          seen.update(entry[1] for entry in published_backups)
           seen.add("clip_01M7QGRKDMMZDP1B12J4CWPJA0")
           from urllib.error import HTTPError, URLError
 
@@ -83,11 +86,10 @@ jobs:
           spanish = {"rdjavi", "riversgg", "gaviria777", "eldrizx", "ibai", "auronplay", "juansguarnizo", "illojuan"}
           english = {"darkviperau", "typicalgamer", "xqc", "popenzl", "tgg", "joshimuz", "theburntpeanut", "jasontheween", "jelly", "caylus"}
           page = ""
-          if os.environ["GITHUB_EVENT_NAME"] == "schedule":
-              try:
-                  page = read("https://kick.com/category/grand-theft-auto-vi/clips")
-              except (HTTPError, URLError, TimeoutError) as error:
-                  print(f"Categoría de Kick no disponible; se usará la cola de respaldo ({error}).")
+          try:
+              page = read("https://kick.com/category/grand-theft-auto-vi/clips")
+          except (HTTPError, URLError, TimeoutError) as error:
+              print(f"Categoría de Kick no disponible; se usará la cola de respaldo ({error}).")
           candidates = list(dict.fromkeys(re.findall(r"/([a-zA-Z0-9_-]+)/clips/(clip_[A-Z0-9]+)", page)))
           candidates = [item for item in candidates if item[0].lower() in spanish | english]
           candidates.sort(key=lambda item: item[0].lower() not in spanish)
@@ -119,7 +121,10 @@ jobs:
                   except (OSError, TimeoutError):
                       continue
           if not selected:
-              print("No hay clips nuevos con una lista HLS accesible.")
+              note = "Sin publicación: Kick no ofreció un clip nuevo accesible y la cola de respaldo está vacía."
+              print(note)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+                  print(note, file=summary)
               raise SystemExit(0)
           author, clip_id, playlist = selected
           with open(os.environ["GITHUB_ENV"], "a") as env:
@@ -128,9 +133,9 @@ jobs:
               print(f"RADAR_TITLE=GTA VI | Clip de {author}"[:100], file=env)
           PY
       - name: Preparar MP4 vertical
-        if: steps.launch_window.outputs.active == 'true' && (github.event_name == 'workflow_dispatch' || env.RADAR_PLAYLIST != '')
+        if: steps.launch_window.outputs.active == 'true' && ((github.event_name == 'workflow_dispatch' && !inputs.automatic) || env.RADAR_PLAYLIST != '')
         env:
-          PLAYLIST: ${{ inputs.playlist || env.RADAR_PLAYLIST }}
+          PLAYLIST: ${{ env.RADAR_PLAYLIST || inputs.playlist }}
         run: |
           set -euo pipefail
           [[ "$PLAYLIST" =~ ^https://clips\.kick\.com/clips/[a-zA-Z0-9/_-]+\.m3u8$ ]]
@@ -144,21 +149,22 @@ jobs:
             -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -movflags +faststart clip.mp4
           ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact clip.mp4
       - name: Reservar clip para evitar subidas duplicadas
-        if: steps.launch_window.outputs.active == 'true' && (github.event_name != 'workflow_dispatch' && env.RADAR_CLIP_ID != '')
+        if: steps.launch_window.outputs.active == 'true' && ((github.event_name == 'schedule' || inputs.automatic) && env.RADAR_CLIP_ID != '')
         run: printf '%s\n' "$RADAR_CLIP_ID" >> radar-seen.txt
       - name: Guardar historial antes de subir
-        if: steps.launch_window.outputs.active == 'true' && (github.event_name != 'workflow_dispatch' && env.RADAR_CLIP_ID != '')
+        if: steps.launch_window.outputs.active == 'true' && ((github.event_name == 'schedule' || inputs.automatic) && env.RADAR_CLIP_ID != '')
         uses: actions/cache/save@v4
         with:
           path: radar-seen.txt
           key: radar-kick-history-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Subir MP4 a YouTube
-        if: steps.launch_window.outputs.active == 'true' && (inputs.upload || (github.event_name != 'workflow_dispatch' && env.RADAR_PLAYLIST != ''))
+        if: steps.launch_window.outputs.active == 'true' && ((!inputs.automatic && inputs.upload) || ((github.event_name == 'schedule' || inputs.automatic) && env.RADAR_PLAYLIST != ''))
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          VIDEO_TITLE: ${{ inputs.title || env.RADAR_TITLE }}
+          VIDEO_TITLE: ${{ env.RADAR_TITLE || inputs.title }}
+          PUBLIC_UPLOAD: ${{ github.event_name == 'schedule' || inputs.automatic }}
         run: |
           python3 - <<'PY'
           import json
@@ -176,7 +182,7 @@ jobs:
           missing = [name for name in fields.values() if not os.environ[name]]
           if missing:
               raise SystemExit("Faltan secretos: " + ", ".join(missing))
-          visibility = "public" if os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch" else "private"
+          visibility = "public" if os.environ["PUBLIC_UPLOAD"] == "true" else "private"
           title = os.environ["VIDEO_TITLE"].strip()
           if not 1 <= len(title) <= 100:
               raise SystemExit("El título debe tener entre 1 y 100 caracteres.")
@@ -220,4 +226,6 @@ jobs:
           if actual != visibility:
               raise SystemExit(f"YouTube devolvió visibilidad {actual!r}; se solicitó {visibility!r}.")
           print(f"Visibilidad confirmada: {actual}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              print(f"Video {actual}: https://www.youtube.com/watch?v={video_id}", file=summary)
           PY
