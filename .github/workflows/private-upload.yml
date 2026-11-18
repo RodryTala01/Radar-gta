@@ -10,18 +10,71 @@ on:
         description: Título del Short
         required: true
         type: string
+      description:
+        description: Descripción del Short
+        required: false
+        type: string
+      visibility:
+        description: Visibilidad en YouTube
+        type: choice
+        default: private
+        options:
+          - private
+          - public
+      prepare_clip:
+        description: Convertir a vertical y alojar el recorte en R2
+        type: boolean
+        default: false
 permissions: {}
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
-      - name: Enviar Short privado a Buffer
+      - name: Preparar clip vertical en R2
+        if: ${{ inputs.prepare_clip }}
+        env:
+          SOURCE_URL: ${{ inputs.video_url }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET R2_PUBLIC_URL; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Falta configurar $name para R2"
+              exit 1
+            fi
+          done
+          [[ "$SOURCE_URL" == https://* && "$R2_PUBLIC_URL" == https://* ]]
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --max-time 120 --max-filesize 250000000 "$SOURCE_URL" -o source.mp4
+          ffmpeg -hide_banner -loglevel error -i source.mp4 -t 30 \
+            -map 0:v:0 -map 0:a:0? \
+            -vf "scale=720:1280:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1" \
+            -c:v libx264 -pix_fmt yuv420p -c:a aac -movflags +faststart clip.mp4
+          object="radar-clips/$(python3 -c 'import uuid; print(uuid.uuid4().hex)').mp4"
+          aws s3 cp clip.mp4 "s3://$R2_BUCKET/$object" \
+            --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+            --content-type video/mp4 --only-show-errors
+          url="${R2_PUBLIC_URL%/}/$object"
+          curl --fail --silent --show-error --retry 3 --max-time 20 --head "$url" >/dev/null
+          printf 'PREPARED_VIDEO_URL=%s\n' "$url" >> "$GITHUB_ENV"
+      - name: Enviar Short a Buffer
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ vars.BUFFER_CHANNEL_ID || secrets.BUFFER_CHANNEL_ID }}
           VIDEO_URL: ${{ inputs.video_url }}
           VIDEO_TITLE: ${{ inputs.title }}
+          VIDEO_DESCRIPTION: ${{ inputs.description }}
+          VIDEO_VISIBILITY: ${{ inputs.visibility }}
         run: |
           python3 - <<'PY'
           import json
@@ -31,7 +84,10 @@ jobs:
 
           key = os.environ["BUFFER_API_KEY"]
           channel = os.environ["BUFFER_CHANNEL_ID"]
-          url = os.environ["VIDEO_URL"]
+          url = os.environ.get("PREPARED_VIDEO_URL") or os.environ["VIDEO_URL"]
+          visibility = os.environ["VIDEO_VISIBILITY"]
+          if visibility not in {"private", "public"}:
+              raise SystemExit("Visibilidad de YouTube inválida.")
           title = os.environ["VIDEO_TITLE"].strip()
           missing = [name for name, value in (("BUFFER_API_KEY", key),
                      ("BUFFER_CHANNEL_ID", channel)) if not value.strip()]
@@ -48,13 +104,13 @@ jobs:
           }"""
           payload = {"query": query, "variables": {"input": {
               "channelId": channel,
-              "text": "",
+              "text": os.environ["VIDEO_DESCRIPTION"],
               "schedulingType": "automatic",
               "mode": "shareNow",
               "assets": [{"video": {"url": url}}],
               "metadata": {"youtube": {
                   "title": title, "categoryId": "20",
-                  "privacy": "private", "notifySubscribers": False
+                  "privacy": visibility, "notifySubscribers": False
               }}
           }}}
           request = urllib.request.Request(
