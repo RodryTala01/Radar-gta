@@ -2,6 +2,9 @@ name: Kick a YouTube privado
 on:
   schedule:
     - cron: '17 */2 * * *'
+    # Refuerzo temporal de lanzamiento. El control de fecha evita repetirlo cada año.
+    - cron: '17 1-23/2 18-22 11 *'
+    - cron: '47 * 18-22 11 *'
   workflow_dispatch:
     inputs:
       playlist:
@@ -25,15 +28,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Comprobar vigencia del horario de lanzamiento
+        id: launch_window
+        env:
+          TRIGGER_CRON: ${{ github.event.schedule }}
+        run: |
+          now=$(date -u +%s)
+          start=$(date -u -d '2026-11-18 03:00:00 UTC' +%s)
+          end=$(date -u -d '2026-11-22 03:00:00 UTC' +%s)
+          if [[ -z "$TRIGGER_CRON" || "$TRIGGER_CRON" == '17 */2 * * *' ]] || (( now >= start && now < end )); then
+            echo 'active=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Recuperar historial de clips
-        if: github.event_name == 'schedule'
+        if: steps.launch_window.outputs.active == 'true' && (github.event_name == 'schedule')
         uses: actions/cache/restore@v4
         with:
           path: radar-seen.txt
           key: radar-kick-history-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: radar-kick-history-
       - name: Buscar un clip de Kick
-        if: github.event_name == 'schedule'
+        if: steps.launch_window.outputs.active == 'true' && (github.event_name == 'schedule')
         run: |
           python3 - <<'PY'
           import concurrent.futures
@@ -81,7 +95,7 @@ jobs:
               print(f"RADAR_TITLE=GTA VI | Clip de {author}"[:100], file=env)
           PY
       - name: Preparar MP4 vertical
-        if: github.event_name == 'workflow_dispatch' || env.RADAR_PLAYLIST != ''
+        if: steps.launch_window.outputs.active == 'true' && (github.event_name == 'workflow_dispatch' || env.RADAR_PLAYLIST != '')
         env:
           PLAYLIST: ${{ inputs.playlist || env.RADAR_PLAYLIST }}
         run: |
@@ -97,16 +111,16 @@ jobs:
             -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -movflags +faststart clip.mp4
           ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact clip.mp4
       - name: Reservar clip para evitar subidas duplicadas
-        if: github.event_name == 'schedule' && env.RADAR_CLIP_ID != ''
+        if: steps.launch_window.outputs.active == 'true' && (github.event_name == 'schedule' && env.RADAR_CLIP_ID != '')
         run: printf '%s\n' "$RADAR_CLIP_ID" >> radar-seen.txt
       - name: Guardar historial antes de subir
-        if: github.event_name == 'schedule' && env.RADAR_CLIP_ID != ''
+        if: steps.launch_window.outputs.active == 'true' && (github.event_name == 'schedule' && env.RADAR_CLIP_ID != '')
         uses: actions/cache/save@v4
         with:
           path: radar-seen.txt
           key: radar-kick-history-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Subir MP4 a YouTube
-        if: inputs.upload || (github.event_name == 'schedule' && env.RADAR_PLAYLIST != '')
+        if: steps.launch_window.outputs.active == 'true' && (inputs.upload || (github.event_name == 'schedule' && env.RADAR_PLAYLIST != ''))
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
