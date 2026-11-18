@@ -1,0 +1,104 @@
+name: Kick a YouTube privado
+on:
+  workflow_dispatch:
+    inputs:
+      playlist:
+        description: URL HLS pública del clip en clips.kick.com
+        required: true
+        type: string
+      title:
+        description: Título del Short
+        required: true
+        type: string
+      description:
+        description: Crédito y enlace original
+        type: string
+      upload:
+        description: Subir a YouTube como privado
+        type: boolean
+        default: false
+permissions: {}
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Preparar MP4 vertical
+        env:
+          PLAYLIST: ${{ inputs.playlist }}
+        run: |
+          set -euo pipefail
+          [[ "$PLAYLIST" =~ ^https://clips\.kick\.com/clips/[a-zA-Z0-9/_-]+\.m3u8$ ]]
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -nostdin -hide_banner -loglevel error -rw_timeout 15000000 \
+            -i "$PLAYLIST" -t 30 -map 0:v:0 -map 0:a:0 \
+            -vf "scale=720:1280:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1" \
+            -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -movflags +faststart clip.mp4
+          ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact clip.mp4
+      - name: Subir MP4 a YouTube
+        if: ${{ inputs.upload }}
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          VIDEO_TITLE: ${{ inputs.title }}
+          VIDEO_DESCRIPTION: ${{ inputs.description }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.parse import urlencode, urlsplit
+          from urllib.request import Request, urlopen
+
+          fields = {
+              "client_id": "YOUTUBE_CLIENT_ID",
+              "client_secret": "YOUTUBE_CLIENT_SECRET",
+              "refresh_token": "YOUTUBE_REFRESH_TOKEN",
+          }
+          missing = [name for name in fields.values() if not os.environ[name]]
+          if missing:
+              raise SystemExit("Faltan secretos: " + ", ".join(missing))
+          title = os.environ["VIDEO_TITLE"].strip()
+          if not 1 <= len(title) <= 100:
+              raise SystemExit("El título debe tener entre 1 y 100 caracteres.")
+
+          def send(url, data, headers, step, method="POST"):
+              try:
+                  return urlopen(Request(url, data=data, headers=headers, method=method), timeout=90)
+              except HTTPError as exc:
+                  raise SystemExit(f"{step}: HTTP {exc.code}") from None
+
+          params = {field: os.environ[name] for field, name in fields.items()}
+          params["grant_type"] = "refresh_token"
+          with send("https://oauth2.googleapis.com/token", urlencode(params).encode(),
+                    {"Content-Type": "application/x-www-form-urlencoded"}, "OAuth") as response:
+              token = json.load(response)["access_token"]
+          authorization = {"Authorization": "Bearer " + token}
+          media = Path("clip.mp4")
+          metadata = {
+              "snippet": {"title": title, "description": os.environ["VIDEO_DESCRIPTION"], "categoryId": "20"},
+              "status": {"privacyStatus": "private"},
+          }
+          endpoint = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=false"
+          headers = authorization | {
+              "Content-Type": "application/json",
+              "X-Upload-Content-Type": "video/mp4",
+              "X-Upload-Content-Length": str(media.stat().st_size),
+          }
+          with send(endpoint, json.dumps(metadata).encode(), headers, "Inicio de subida") as response:
+              session = response.headers["Location"]
+          target = urlsplit(session)
+          if target.scheme != "https" or target.hostname != "www.googleapis.com":
+              raise SystemExit("YouTube devolvió un destino inesperado.")
+          with send(session, media.read_bytes(), authorization | {"Content-Type": "video/mp4"},
+                    "Transferencia del MP4", "PUT") as response:
+              video = json.load(response)
+          if video.get("status", {}).get("privacyStatus") != "private" or not video.get("id"):
+              raise SystemExit("No se pudo verificar la visibilidad privada.")
+          print("Video privado confirmado: https://www.youtube.com/watch?v=" + video["id"])
+          PY
