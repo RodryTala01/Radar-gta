@@ -29,7 +29,7 @@ concurrency:
 permissions: {}
 jobs:
   prepare:
-    if: github.event_name != 'push' || github.event.head_commit.message == 'Publish selected NEEXcsgo Short on request'
+    if: github.event_name != 'push' || github.event.head_commit.message == 'Test Radar GTA backup queue with one public Short'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -77,22 +77,20 @@ jobs:
               with urlopen(url, timeout=12) as response:
                   return response.read(12_000_000).decode("utf-8", errors="replace")
 
-          if os.environ["GITHUB_EVENT_NAME"] == "push":
-              clip_id = "clip_01M7QGRKDMMZDP1B12J4CWPJA0"
-              if clip_id not in seen:
-                  with open(os.environ["GITHUB_ENV"], "a") as env:
-                      print("RADAR_PLAYLIST=https://clips.kick.com/clips/ad/" + clip_id + "/playlist.m3u8", file=env)
-                      print("RADAR_CLIP_ID=" + clip_id, file=env)
-                      print("RADAR_TITLE=GTA VI | Clip de NEEXcsgo", file=env)
-              raise SystemExit(0)
+          fallback = [["eldrizx","clip_01M7Q574VGFZ58N6EQPPBB3JNG","https://clips.kick.com/clips/9b/clip_01M7Q574VGFZ58N6EQPPBB3JNG/playlist.m3u8"],["eldrizx","clip_01M7Q5SB30W1XGAHG7SC85QDFQ","https://clips.kick.com/clips/1f/clip_01M7Q5SB30W1XGAHG7SC85QDFQ/playlist.m3u8"]]
+          seen.add("clip_01M7QGRKDMMZDP1B12J4CWPJA0")
+          from urllib.error import HTTPError, URLError
 
           # Idioma habitual del canal. El audio de cada clip puede variar.
           spanish = {"rdjavi", "riversgg", "gaviria777", "eldrizx", "ibai", "auronplay", "juansguarnizo", "illojuan"}
           english = {"darkviperau", "typicalgamer", "xqc", "popenzl", "tgg", "joshimuz", "theburntpeanut", "jasontheween", "jelly", "caylus"}
-          page = read("https://kick.com/category/grand-theft-auto-vi/clips")
+          page = ""
+          if os.environ["GITHUB_EVENT_NAME"] == "schedule":
+              try:
+                  page = read("https://kick.com/category/grand-theft-auto-vi/clips")
+              except (HTTPError, URLError, TimeoutError) as error:
+                  print(f"Categoría de Kick no disponible; se usará la cola de respaldo ({error}).")
           candidates = list(dict.fromkeys(re.findall(r"/([a-zA-Z0-9_-]+)/clips/(clip_[A-Z0-9]+)", page)))
-          if not candidates:
-              raise SystemExit("Kick no devolvió enlaces de clips en su categoría pública.")
           candidates = [item for item in candidates if item[0].lower() in spanish | english]
           candidates.sort(key=lambda item: item[0].lower() not in spanish)
 
@@ -112,6 +110,16 @@ jobs:
           with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
               results = list(pool.map(resolve, [item for item in candidates if item[1] not in seen][:12]))
           selected = next((result for result in results if result), None)
+          if not selected:
+              for author, clip_id, playlist in fallback:
+                  if clip_id in seen:
+                      continue
+                  try:
+                      if read(playlist).startswith("#EXTM3U"):
+                          selected = author, clip_id, playlist
+                          break
+                  except (OSError, TimeoutError):
+                      continue
           if not selected:
               print("No hay clips nuevos con una lista HLS accesible.")
               raise SystemExit(0)
